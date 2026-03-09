@@ -40,6 +40,7 @@ cmd_install() {
     local targets=""
     local dns_domains=""
     local run_user="${DEFAULT_USER}"
+    local reset_on_shutdown=false
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -48,6 +49,7 @@ cmd_install() {
             --targets)     targets="$2";     shift 2 ;;
             --dns-domains) dns_domains="$2"; shift 2 ;;
             --user)        run_user="$2";    shift 2 ;;
+            --reset-on-shutdown) reset_on_shutdown=true; shift 1 ;;
             *) die "Unknown install option: $1" ;;
         esac
     done
@@ -149,6 +151,14 @@ UNITEOF
 
     # Inject the User= line (can't use variable inside heredoc with 'UNITEOF')
     sed -i "/^\[Service\]$/a User=${run_user}" "${UNIT_FILE}"
+
+    if [[ "${reset_on_shutdown}" == true ]]; then
+        cat >> "${UNIT_FILE}" <<'RESETEOF'
+
+# Clean up database and output when service stops/shuts down
+ExecStopPost=-/bin/rm -f ${DB} ${OUTPUT}
+RESETEOF
+    fi
 
     # Append [Install] section
     cat >> "${UNIT_FILE}" <<'INSTALLEOF'
@@ -295,6 +305,7 @@ Install options:
   --targets "h1 h2"    Hosts/IPs to ping
   --dns-domains "d1 d2" Domains for DNS tests
   --user USER           Run as USER instead of ${DEFAULT_USER}
+  --reset-on-shutdown   Delete DB and HTML files on service stop/shutdown
 
 Uninstall options:
   --purge               Also remove data in ${DATA_DIR}
