@@ -287,6 +287,54 @@ cmd_status() {
 }
 
 # ---------------------------------------------------------------------------
+# reset
+# ---------------------------------------------------------------------------
+
+cmd_reset() {
+    need_root
+
+    local db_file="${DATA_DIR}/network_profile.db"
+    local output_file="${DATA_DIR}/network_profile.html"
+
+    if [[ -f "${ENV_FILE}" ]]; then
+        # Load active paths from config if present
+        source "${ENV_FILE}" 2>/dev/null || true
+        [[ -n "${DB:-}" ]] && db_file="${DB}"
+        [[ -n "${OUTPUT:-}" ]] && output_file="${OUTPUT}"
+    fi
+
+    info "Stopping ${SERVICE_NAME} …"
+    systemctl stop "${SERVICE_NAME}"
+
+    if [[ -f "${db_file}" ]]; then
+        info "Deleting ${db_file} …"
+        rm -f "${db_file}"
+    else
+        info "No database file found at ${db_file}."
+    fi
+
+    if [[ -f "${output_file}" ]]; then
+        info "Deleting ${output_file} …"
+        rm -f "${output_file}"
+    else
+        info "No HTML file found at ${output_file}."
+    fi
+
+    info "Starting ${SERVICE_NAME} …"
+    systemctl start "${SERVICE_NAME}"
+    
+    # Brief pause then verify
+    sleep 1
+    if systemctl is-active --quiet "${SERVICE_NAME}"; then
+        info "Service ${SERVICE_NAME} restarted successfully."
+    else
+        echo "WARNING: Service did not start successfully. Check logs with:"
+        echo "  journalctl -u ${SERVICE_NAME} --no-pager -n 40"
+        exit 1
+    fi
+}
+
+# ---------------------------------------------------------------------------
 # Main dispatch
 # ---------------------------------------------------------------------------
 
@@ -298,6 +346,7 @@ Commands:
   install     Install network-profiler as a systemd service
   uninstall   Remove the systemd service
   status      Show service status and config
+  reset       Stop the service, clear DB and HTML files, and restart
 
 Install options:
   --port PORT           HTTP port (default: ${DEFAULT_PORT})
@@ -317,6 +366,7 @@ case "${1:-}" in
     install)   shift; cmd_install "$@" ;;
     uninstall) shift; cmd_uninstall "$@" ;;
     status)    shift; cmd_status "$@" ;;
+    reset)     shift; cmd_reset "$@" ;;
     -h|--help) usage ;;
     *)         usage; exit 1 ;;
 esac
