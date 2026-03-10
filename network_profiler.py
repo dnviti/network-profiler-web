@@ -36,31 +36,40 @@ import textwrap
 import threading
 import time
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from html import escape
 
 import psutil
 import uvicorn
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Query, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 
 # ---------------------------------------------------------------------------
 # Defaults
 # ---------------------------------------------------------------------------
-DEFAULT_INTERVAL = 2          # seconds between measurement rounds
-DEFAULT_REPORT_INTERVAL = 5   # seconds between data recomputation
-DEFAULT_DURATION = None       # None = run until Ctrl-C
+DEFAULT_INTERVAL = 2  # seconds between measurement rounds
+DEFAULT_REPORT_INTERVAL = 5  # seconds between data recomputation
+DEFAULT_DURATION = None  # None = run until Ctrl-C
 DEFAULT_PORT = 8065
 DEFAULT_HTML = "network_profile.html"
 DEFAULT_DB = "network_profile.db"
 DEFAULT_DNS_DOMAINS = [
-    "google.com", "github.com", "cloudflare.com",
-    "claude.ai", "cloudflare.com",
+    "google.com",
+    "github.com",
+    "cloudflare.com",
+    "claude.ai",
+    "cloudflare.com",
 ]
 
 COLORS = [
-    "#3b82f6", "#ef4444", "#22c55e", "#f59e0b",
-    "#8b5cf6", "#ec4899", "#14b8a6", "#f97316",
+    "#3b82f6",
+    "#ef4444",
+    "#22c55e",
+    "#f59e0b",
+    "#8b5cf6",
+    "#ec4899",
+    "#14b8a6",
+    "#f97316",
 ]
 
 _script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -68,6 +77,7 @@ _script_dir = os.path.dirname(os.path.abspath(__file__))
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def parse_duration(s: str) -> float:
     """Parse a human duration string like '30s', '10m', '2h', '1.5h' into seconds."""
@@ -86,7 +96,8 @@ def get_default_gateway() -> str | None:
     try:
         out = subprocess.check_output(
             ["ip", "route", "show", "default"],
-            text=True, timeout=5,
+            text=True,
+            timeout=5,
         )
         m = re.search(r"via\s+(\S+)", out)
         return m.group(1) if m else None
@@ -103,17 +114,21 @@ def ping_host(host: str, count: int = 1, timeout: int = 3) -> dict:
     try:
         out = subprocess.run(
             ["ping", "-c", str(count), "-W", str(timeout), host],
-            capture_output=True, text=True, timeout=timeout + 2,
+            capture_output=True,
+            text=True,
+            timeout=timeout + 2,
         )
         m = re.search(r"time[=<]([\d.]+)\s*ms", out.stdout)
         if m:
-            return {"host": host, "timestamp": ts,
-                    "latency_ms": float(m.group(1)), "lost": False}
-        return {"host": host, "timestamp": ts,
-                "latency_ms": None, "lost": True}
+            return {
+                "host": host,
+                "timestamp": ts,
+                "latency_ms": float(m.group(1)),
+                "lost": False,
+            }
+        return {"host": host, "timestamp": ts, "latency_ms": None, "lost": True}
     except Exception:
-        return {"host": host, "timestamp": ts,
-                "latency_ms": None, "lost": True}
+        return {"host": host, "timestamp": ts, "latency_ms": None, "lost": True}
 
 
 def measure_dns(domain: str, server: str | None = None) -> dict:
@@ -123,37 +138,53 @@ def measure_dns(domain: str, server: str | None = None) -> dict:
     try:
         socket.getaddrinfo(domain, 80, socket.AF_INET)
         elapsed = (time.monotonic() - start) * 1000
-        return {"domain": domain, "timestamp": ts,
-                "resolve_ms": round(elapsed, 2), "failed": False}
+        return {
+            "domain": domain,
+            "timestamp": ts,
+            "resolve_ms": round(elapsed, 2),
+            "failed": False,
+        }
     except Exception:
         elapsed = (time.monotonic() - start) * 1000
-        return {"domain": domain, "timestamp": ts,
-                "resolve_ms": round(elapsed, 2), "failed": True}
+        return {
+            "domain": domain,
+            "timestamp": ts,
+            "resolve_ms": round(elapsed, 2),
+            "failed": True,
+        }
 
 
-def get_throughput_snapshot() -> dict:
-    """Return current psutil net counters."""
-    c = psutil.net_io_counters()
-    return {
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "bytes_sent": c.bytes_sent,
-        "bytes_recv": c.bytes_recv,
-        "packets_sent": c.packets_sent,
-        "packets_recv": c.packets_recv,
-        "errin": c.errin,
-        "errout": c.errout,
-        "dropin": c.dropin,
-        "dropout": c.dropout,
-    }
+def get_throughput_snapshots() -> list[dict]:
+    """Return current psutil net counters per interface."""
+    counters = psutil.net_io_counters(pernic=True)
+    ts = datetime.now(timezone.utc).isoformat()
+    return [
+        {
+            "timestamp": ts,
+            "interface": nic,
+            "bytes_sent": c.bytes_sent,
+            "bytes_recv": c.bytes_recv,
+            "packets_sent": c.packets_sent,
+            "packets_recv": c.packets_recv,
+            "errin": c.errin,
+            "errout": c.errout,
+            "dropin": c.dropin,
+            "dropout": c.dropout,
+        }
+        for nic, c in counters.items()
+    ]
+
 
 # ---------------------------------------------------------------------------
 # Database
 # ---------------------------------------------------------------------------
 
+
 def init_db(path: str) -> sqlite3.Connection:
     conn = sqlite3.connect(path, check_same_thread=False)
     conn.execute("PRAGMA journal_mode=WAL")
-    conn.executescript(textwrap.dedent("""\
+    conn.executescript(
+        textwrap.dedent("""\
         CREATE TABLE IF NOT EXISTS pings (
             id        INTEGER PRIMARY KEY,
             ts        TEXT NOT NULL,
@@ -171,6 +202,7 @@ def init_db(path: str) -> sqlite3.Connection:
         CREATE TABLE IF NOT EXISTS throughput (
             id           INTEGER PRIMARY KEY,
             ts           TEXT NOT NULL,
+            interface    TEXT NOT NULL,
             bytes_sent   INTEGER,
             bytes_recv   INTEGER,
             packets_sent INTEGER,
@@ -189,7 +221,8 @@ def init_db(path: str) -> sqlite3.Connection:
         CREATE INDEX IF NOT EXISTS idx_pings_ts ON pings(ts);
         CREATE INDEX IF NOT EXISTS idx_dns_ts   ON dns(ts);
         CREATE INDEX IF NOT EXISTS idx_tp_ts    ON throughput(ts);
-    """))
+    """)
+    )
     conn.commit()
     return conn
 
@@ -218,12 +251,21 @@ def db_insert_dns(conn, d):
 def db_insert_throughput(conn, t):
     with DB_LOCK:
         conn.execute(
-            "INSERT INTO throughput(ts,bytes_sent,bytes_recv,"
+            "INSERT INTO throughput(ts,interface,bytes_sent,bytes_recv,"
             "packets_sent,packets_recv,errin,errout,dropin,dropout) "
-            "VALUES(?,?,?,?,?,?,?,?,?)",
-            (t["timestamp"], t["bytes_sent"], t["bytes_recv"],
-             t["packets_sent"], t["packets_recv"],
-             t["errin"], t["errout"], t["dropin"], t["dropout"]),
+            "VALUES(?,?,?,?,?,?,?,?,?,?)",
+            (
+                t["timestamp"],
+                t["interface"],
+                t["bytes_sent"],
+                t["bytes_recv"],
+                t["packets_sent"],
+                t["packets_recv"],
+                t["errin"],
+                t["errout"],
+                t["dropin"],
+                t["dropout"],
+            ),
         )
         conn.commit()
 
@@ -237,57 +279,103 @@ def db_insert_event(conn, kind, detail=""):
         )
         conn.commit()
 
+
 # ---------------------------------------------------------------------------
 # Data loading
 # ---------------------------------------------------------------------------
 
-def load_pings(conn) -> list[dict]:
+
+def load_pings(conn, since: str | None = None) -> list[dict]:
     with DB_LOCK:
-        rows = conn.execute(
-            "SELECT ts, host, latency, lost FROM pings ORDER BY ts"
-        ).fetchall()
-    return [{"ts": r[0], "host": r[1], "latency": r[2], "lost": r[3]}
-            for r in rows]
+        if since:
+            rows = conn.execute(
+                "SELECT ts, host, latency, lost FROM pings WHERE ts >= ? ORDER BY ts",
+                (since,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT ts, host, latency, lost FROM pings ORDER BY ts"
+            ).fetchall()
+    return [{"ts": r[0], "host": r[1], "latency": r[2], "lost": r[3]} for r in rows]
 
 
-def load_dns(conn) -> list[dict]:
+def load_dns(conn, since: str | None = None) -> list[dict]:
     with DB_LOCK:
-        rows = conn.execute(
-            "SELECT ts, domain, resolve, failed FROM dns ORDER BY ts"
-        ).fetchall()
-    return [{"ts": r[0], "domain": r[1], "resolve": r[2], "failed": r[3]}
-            for r in rows]
+        if since:
+            rows = conn.execute(
+                "SELECT ts, domain, resolve, failed FROM dns WHERE ts >= ? ORDER BY ts",
+                (since,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT ts, domain, resolve, failed FROM dns ORDER BY ts"
+            ).fetchall()
+    return [{"ts": r[0], "domain": r[1], "resolve": r[2], "failed": r[3]} for r in rows]
 
 
-def load_throughput(conn) -> list[dict]:
+def load_throughput(conn, since: str | None = None) -> list[dict]:
     with DB_LOCK:
-        rows = conn.execute(
-            "SELECT ts, bytes_sent, bytes_recv, packets_sent, packets_recv,"
-            "errin, errout, dropin, dropout FROM throughput ORDER BY ts"
-        ).fetchall()
-    return [{"ts": r[0], "bytes_sent": r[1], "bytes_recv": r[2],
-             "packets_sent": r[3], "packets_recv": r[4],
-             "errin": r[5], "errout": r[6],
-             "dropin": r[7], "dropout": r[8]} for r in rows]
+        if since:
+            rows = conn.execute(
+                "SELECT ts, interface, bytes_sent, bytes_recv, packets_sent, packets_recv,"
+                "errin, errout, dropin, dropout FROM throughput WHERE ts >= ? ORDER BY ts",
+                (since,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT ts, interface, bytes_sent, bytes_recv, packets_sent, packets_recv,"
+                "errin, errout, dropin, dropout FROM throughput ORDER BY ts"
+            ).fetchall()
+    return [
+        {
+            "ts": r[0],
+            "interface": r[1],
+            "bytes_sent": r[2],
+            "bytes_recv": r[3],
+            "packets_sent": r[4],
+            "packets_recv": r[5],
+            "errin": r[6],
+            "errout": r[7],
+            "dropin": r[8],
+            "dropout": r[9],
+        }
+        for r in rows
+    ]
 
 
-def load_events(conn) -> list[dict]:
+def load_events(conn, since: str | None = None) -> list[dict]:
     with DB_LOCK:
-        rows = conn.execute(
-            "SELECT ts, kind, detail FROM events ORDER BY ts"
-        ).fetchall()
+        if since:
+            rows = conn.execute(
+                "SELECT ts, kind, detail FROM events WHERE ts >= ? ORDER BY ts",
+                (since,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT ts, kind, detail FROM events ORDER BY ts"
+            ).fetchall()
     return [{"ts": r[0], "kind": r[1], "detail": r[2]} for r in rows]
+
 
 # ---------------------------------------------------------------------------
 # Compute derived chart data + summary  →  JSON-serialisable dict
 # ---------------------------------------------------------------------------
 
-def build_api_data(conn) -> dict:
-    """Load everything from the DB and return a dict ready for JSON."""
-    pings = load_pings(conn)
-    dns_data = load_dns(conn)
-    tp_data = load_throughput(conn)
-    events = load_events(conn)
+
+def build_api_data(conn, minutes: float | None = None) -> dict:
+    """Load data from the DB and return a dict ready for JSON.
+
+    If *minutes* is given, only rows from the last *minutes* minutes
+    are loaded (using the ``ts`` index).  ``None`` means all data.
+    """
+    since: str | None = None
+    if minutes is not None and minutes > 0:
+        since = (datetime.now(timezone.utc) - timedelta(minutes=minutes)).isoformat()
+
+    pings = load_pings(conn, since)
+    dns_data = load_dns(conn, since)
+    tp_data = load_throughput(conn, since)
+    events = load_events(conn, since)
 
     if not pings:
         return {"empty": True}
@@ -297,9 +385,11 @@ def build_api_data(conn) -> dict:
     # --- latency per host ---
     latency = {}
     for host in hosts:
-        latency[host] = [{"x": p["ts"], "y": p["latency"]}
-                         for p in pings
-                         if p["host"] == host and p["latency"] is not None]
+        latency[host] = [
+            {"x": p["ts"], "y": p["latency"]}
+            for p in pings
+            if p["host"] == host and p["latency"] is not None
+        ]
 
     # --- rolling packet loss % (window 20) ---
     loss = {}
@@ -308,44 +398,82 @@ def build_api_data(conn) -> dict:
         w = 20
         pts = []
         for i in range(w, len(hp) + 1):
-            chunk = hp[i - w:i]
-            pts.append({"x": chunk[-1]["ts"],
-                        "y": round(100 * sum(1 for c in chunk if c["lost"]) / w, 1)})
+            chunk = hp[i - w : i]
+            pts.append(
+                {
+                    "x": chunk[-1]["ts"],
+                    "y": round(100 * sum(1 for c in chunk if c["lost"]) / w, 1),
+                }
+            )
         loss[host] = pts
 
     # --- jitter (rolling stdev of 10 latencies) ---
     jitter = {}
     for host in hosts:
-        lats = [(p["ts"], p["latency"]) for p in pings
-                if p["host"] == host and p["latency"] is not None]
+        lats = [
+            (p["ts"], p["latency"])
+            for p in pings
+            if p["host"] == host and p["latency"] is not None
+        ]
         w = 10
         pts = []
         for i in range(w, len(lats) + 1):
-            vals = [l[1] for l in lats[i - w:i]]
+            vals = [l[1] for l in lats[i - w : i]]
             if len(vals) > 1:
-                pts.append({"x": lats[i - 1][0],
-                            "y": round(statistics.stdev(vals), 2)})
+                pts.append({"x": lats[i - 1][0], "y": round(statistics.stdev(vals), 2)})
         jitter[host] = pts
 
     # --- DNS resolution ---
     domains = sorted(set(d["domain"] for d in dns_data))
     dns = {}
     for domain in domains:
-        dns[domain] = [{"x": d["ts"], "y": d["resolve"]}
-                       for d in dns_data
-                       if d["domain"] == domain and not d["failed"]]
+        dns[domain] = [
+            {"x": d["ts"], "y": d["resolve"]}
+            for d in dns_data
+            if d["domain"] == domain and not d["failed"]
+        ]
 
     # --- throughput rate ---
-    tp_down, tp_up = [], []
-    for i in range(1, len(tp_data)):
-        prev, cur = tp_data[i - 1], tp_data[i]
-        dt = (datetime.fromisoformat(cur["ts"])
-              - datetime.fromisoformat(prev["ts"])).total_seconds()
-        if dt > 0:
-            tp_down.append({"x": cur["ts"],
-                            "y": round((cur["bytes_recv"] - prev["bytes_recv"]) * 8 / 1000 / dt, 1)})
-            tp_up.append({"x": cur["ts"],
-                          "y": round((cur["bytes_sent"] - prev["bytes_sent"]) * 8 / 1000 / dt, 1)})
+    interfaces = sorted(list(set(t["interface"] for t in tp_data)))
+    tp_down, tp_up = {nic: [] for nic in interfaces}, {nic: [] for nic in interfaces}
+    for nic in interfaces:
+        nic_tp = [t for t in tp_data if t["interface"] == nic]
+        for i in range(1, len(nic_tp)):
+            prev, cur = nic_tp[i - 1], nic_tp[i]
+            dt = (
+                datetime.fromisoformat(cur["ts"]) - datetime.fromisoformat(prev["ts"])
+            ).total_seconds()
+            if dt > 0:
+                tp_down[nic].append(
+                    {
+                        "x": cur["ts"],
+                        "y": round(
+                            max(
+                                0,
+                                (cur["bytes_recv"] - prev["bytes_recv"])
+                                * 8
+                                / 1000
+                                / dt,
+                            ),
+                            1,
+                        ),
+                    }
+                )
+                tp_up[nic].append(
+                    {
+                        "x": cur["ts"],
+                        "y": round(
+                            max(
+                                0,
+                                (cur["bytes_sent"] - prev["bytes_sent"])
+                                * 8
+                                / 1000
+                                / dt,
+                            ),
+                            1,
+                        ),
+                    }
+                )
 
     # --- event annotations (for embedded Chart.js fallback) ---
     annotations = []
@@ -354,24 +482,41 @@ def build_api_data(conn) -> dict:
             continue
         c = "#ef4444" if e["kind"] == "disconnect" else "#22c55e"
         lbl = "DISCONNECT" if e["kind"] == "disconnect" else "RECONNECT"
-        annotations.append({
-            "type": "line", "xMin": e["ts"], "xMax": e["ts"],
-            "borderColor": c, "borderWidth": 2, "borderDash": [4, 4],
-            "label": {"display": True, "content": lbl, "position": "start",
-                      "backgroundColor": c, "color": "#fff",
-                      "font": {"size": 10}},
-        })
+        annotations.append(
+            {
+                "type": "line",
+                "xMin": e["ts"],
+                "xMax": e["ts"],
+                "borderColor": c,
+                "borderWidth": 2,
+                "borderDash": [4, 4],
+                "label": {
+                    "display": True,
+                    "content": lbl,
+                    "position": "start",
+                    "backgroundColor": c,
+                    "color": "#fff",
+                    "font": {"size": 10},
+                },
+            }
+        )
 
     # --- summary stats ---
     summary = {"ping": {}, "dns": {}, "throughput": {}, "events": {}}
 
     for host in hosts:
-        lvals = [p["latency"] for p in pings
-                 if p["host"] == host and p["latency"] is not None]
+        lvals = [
+            p["latency"]
+            for p in pings
+            if p["host"] == host and p["latency"] is not None
+        ]
         total = sum(1 for p in pings if p["host"] == host)
         lost_n = sum(1 for p in pings if p["host"] == host and p["lost"])
-        s = {"total": total, "lost": lost_n,
-             "loss_pct": round(100 * lost_n / total, 1) if total else 0}
+        s = {
+            "total": total,
+            "lost": lost_n,
+            "loss_pct": round(100 * lost_n / total, 1) if total else 0,
+        }
         if lvals:
             s["min"] = round(min(lvals), 2)
             s["max"] = round(max(lvals), 2)
@@ -383,8 +528,9 @@ def build_api_data(conn) -> dict:
         summary["ping"][host] = s
 
     for domain in domains:
-        resolves = [d["resolve"] for d in dns_data
-                    if d["domain"] == domain and not d["failed"]]
+        resolves = [
+            d["resolve"] for d in dns_data if d["domain"] == domain and not d["failed"]
+        ]
         total = sum(1 for d in dns_data if d["domain"] == domain)
         failed = sum(1 for d in dns_data if d["domain"] == domain and d["failed"])
         ds = {"total": total, "failed": failed}
@@ -393,22 +539,35 @@ def build_api_data(conn) -> dict:
             ds["max"] = round(max(resolves), 2)
         summary["dns"][domain] = ds
 
-    if len(tp_data) >= 2:
-        first, last = tp_data[0], tp_data[-1]
-        dur = (datetime.fromisoformat(last["ts"])
-               - datetime.fromisoformat(first["ts"])).total_seconds()
-        if dur > 0:
-            summary["throughput"] = {
-                "duration_s": round(dur, 1),
-                "avg_down_kbps": round(
-                    (last["bytes_recv"] - first["bytes_recv"]) * 8 / 1000 / dur, 1),
-                "avg_up_kbps": round(
-                    (last["bytes_sent"] - first["bytes_sent"]) * 8 / 1000 / dur, 1),
-                "total_dropin": last["dropin"] - first["dropin"],
-                "total_dropout": last["dropout"] - first["dropout"],
-                "total_errin": last["errin"] - first["errin"],
-                "total_errout": last["errout"] - first["errout"],
-            }
+    for nic in interfaces:
+        nic_tp = [t for t in tp_data if t["interface"] == nic]
+        if len(nic_tp) >= 2:
+            first, last = nic_tp[0], nic_tp[-1]
+            dur = (
+                datetime.fromisoformat(last["ts"]) - datetime.fromisoformat(first["ts"])
+            ).total_seconds()
+            if dur > 0:
+                summary["throughput"][nic] = {
+                    "duration_s": round(dur, 1),
+                    "avg_down_kbps": round(
+                        max(
+                            0,
+                            (last["bytes_recv"] - first["bytes_recv"]) * 8 / 1000 / dur,
+                        ),
+                        1,
+                    ),
+                    "avg_up_kbps": round(
+                        max(
+                            0,
+                            (last["bytes_sent"] - first["bytes_sent"]) * 8 / 1000 / dur,
+                        ),
+                        1,
+                    ),
+                    "total_dropin": max(0, last["dropin"] - first["dropin"]),
+                    "total_dropout": max(0, last["dropout"] - first["dropout"]),
+                    "total_errin": max(0, last["errin"] - first["errin"]),
+                    "total_errout": max(0, last["errout"] - first["errout"]),
+                }
 
     summary["events"] = {
         "disconnections": sum(1 for e in events if e["kind"] == "disconnect"),
@@ -420,6 +579,7 @@ def build_api_data(conn) -> dict:
         "updated": datetime.now(timezone.utc).isoformat(),
         "hosts": hosts,
         "domains": domains,
+        "interfaces": interfaces,
         "colors": COLORS,
         "latency": latency,
         "loss": loss,
@@ -428,10 +588,12 @@ def build_api_data(conn) -> dict:
         "tp_down": tp_down,
         "tp_up": tp_up,
         "annotations": annotations,
-        "events_raw": [{"ts": e["ts"], "kind": e["kind"], "detail": e["detail"]}
-                       for e in events],
+        "events_raw": [
+            {"ts": e["ts"], "kind": e["kind"], "detail": e["detail"]} for e in events
+        ],
         "summary": summary,
     }
+
 
 # ---------------------------------------------------------------------------
 # Live dashboard HTML  (fetches /api/data via JS, no page reloads)
@@ -658,6 +820,7 @@ setInterval(poll, POLL_MS);
 # Static HTML snapshot (data baked in — works offline)
 # ---------------------------------------------------------------------------
 
+
 def build_static_html(api_data: dict) -> str:
     """Bake api_data into the dashboard HTML so it works as a standalone file."""
     # We reuse the same dashboard HTML but replace the fetch-based JS
@@ -669,36 +832,61 @@ def build_static_html(api_data: dict) -> str:
         "if(!_STATIC.empty){ initCharts(_STATIC); updateStats(_STATIC); }\n"
         "document.getElementById('status').className = 'dead';\n"
         "document.querySelector('.meta').innerHTML = "
-        "'<span id=\"status\" class=\"dead\"></span>Static snapshot — profiler not running';",
+        '\'<span id="status" class="dead"></span>Static snapshot — profiler not running\';',
     )
+
 
 # ---------------------------------------------------------------------------
 # WebSocket connection manager
 # ---------------------------------------------------------------------------
 
+
 class ConnectionManager:
     def __init__(self):
         self.active_connections: list[WebSocket] = []
+        self._minutes: dict[WebSocket, float | None] = {}
         self._lock = asyncio.Lock()
 
-    async def connect(self, websocket: WebSocket):
+    async def connect(self, websocket: WebSocket, minutes: float | None = None):
         await websocket.accept()
         async with self._lock:
             self.active_connections.append(websocket)
+            self._minutes[websocket] = minutes
+
+    async def set_minutes(self, websocket: WebSocket, minutes: float | None):
+        async with self._lock:
+            self._minutes[websocket] = minutes
 
     async def disconnect(self, websocket: WebSocket):
         async with self._lock:
             if websocket in self.active_connections:
                 self.active_connections.remove(websocket)
+            self._minutes.pop(websocket, None)
 
-    async def broadcast(self, data: dict):
+    async def broadcast(self, conn_db):
+        """Build data per unique time-window and send to each client."""
         async with self._lock:
-            for connection in list(self.active_connections):
+            if not self.active_connections:
+                return
+
+            # Group clients by their requested minutes
+            groups: dict[float | None, list[WebSocket]] = {}
+            for ws in list(self.active_connections):
+                m = self._minutes.get(ws, DEFAULT_WS_MINUTES)
+                groups.setdefault(m, []).append(ws)
+
+        # Build data once per unique window (outside the lock)
+        for minutes, clients in groups.items():
+            data = build_api_data(conn_db, minutes=minutes)
+            for ws in clients:
                 try:
-                    await connection.send_json(data)
+                    await ws.send_json(data)
                 except Exception:
-                    if connection in self.active_connections:
-                        self.active_connections.remove(connection)
+                    async with self._lock:
+                        if ws in self.active_connections:
+                            self.active_connections.remove(ws)
+                        self._minutes.pop(ws, None)
+
 
 manager = ConnectionManager()
 
@@ -718,6 +906,7 @@ _state: dict = {
 # FastAPI app with lifespan
 # ---------------------------------------------------------------------------
 
+
 @asynccontextmanager
 async def lifespan(app):
     # --- Startup ---
@@ -731,10 +920,12 @@ async def lifespan(app):
 
     duration_sec = _state["duration_sec"]
     if duration_sec:
+
         async def _duration_timer():
             await asyncio.sleep(duration_sec)
             _print(f"\nDuration reached ({_state['args'].duration}) — stopping…")
             os.kill(os.getpid(), signal.SIGINT)
+
         asyncio.create_task(_duration_timer())
 
     yield
@@ -758,22 +949,188 @@ async def lifespan(app):
 app = FastAPI(lifespan=lifespan)
 
 
+DEFAULT_WS_MINUTES = 5  # default time window for WebSocket broadcasts
+
+
+def build_global_summary(conn) -> dict:
+    """Return lightweight all-time scalar statistics using SQL aggregations.
+
+    This avoids loading every row into Python and is safe to call even
+    with millions of rows in the database.
+    """
+    with DB_LOCK:
+        # --- per-host ping stats ---
+        ping_rows = conn.execute(
+            "SELECT host,"
+            "  COUNT(*) AS total,"
+            "  SUM(lost) AS lost,"
+            "  ROUND(100.0 * SUM(lost) / COUNT(*), 1) AS loss_pct,"
+            "  ROUND(MIN(latency), 2) AS mn,"
+            "  ROUND(MAX(latency), 2) AS mx,"
+            "  ROUND(AVG(latency), 2) AS av,"
+            "  COUNT(latency) AS valid"
+            " FROM pings GROUP BY host ORDER BY host"
+        ).fetchall()
+
+        # --- per-domain DNS stats ---
+        dns_rows = conn.execute(
+            "SELECT domain,"
+            "  COUNT(*) AS total,"
+            "  SUM(failed) AS failed,"
+            "  ROUND(AVG(CASE WHEN failed=0 THEN resolve END), 2) AS av,"
+            "  ROUND(MIN(CASE WHEN failed=0 THEN resolve END), 2) AS mn,"
+            "  ROUND(MAX(CASE WHEN failed=0 THEN resolve END), 2) AS mx"
+            " FROM dns GROUP BY domain ORDER BY domain"
+        ).fetchall()
+
+        # --- throughput first/last for duration + averages ---
+        tp_bounds = conn.execute(
+            "SELECT t1.interface, MIN(t1.ts), MAX(t1.ts),"
+            "  (SELECT bytes_recv FROM throughput t2 WHERE t2.interface=t1.interface ORDER BY ts ASC  LIMIT 1),"
+            "  (SELECT bytes_recv FROM throughput t2 WHERE t2.interface=t1.interface ORDER BY ts DESC LIMIT 1),"
+            "  (SELECT bytes_sent FROM throughput t2 WHERE t2.interface=t1.interface ORDER BY ts ASC  LIMIT 1),"
+            "  (SELECT bytes_sent FROM throughput t2 WHERE t2.interface=t1.interface ORDER BY ts DESC LIMIT 1),"
+            "  (SELECT dropin  FROM throughput t2 WHERE t2.interface=t1.interface ORDER BY ts ASC  LIMIT 1),"
+            "  (SELECT dropin  FROM throughput t2 WHERE t2.interface=t1.interface ORDER BY ts DESC LIMIT 1),"
+            "  (SELECT dropout FROM throughput t2 WHERE t2.interface=t1.interface ORDER BY ts ASC  LIMIT 1),"
+            "  (SELECT dropout FROM throughput t2 WHERE t2.interface=t1.interface ORDER BY ts DESC LIMIT 1),"
+            "  (SELECT errin   FROM throughput t2 WHERE t2.interface=t1.interface ORDER BY ts ASC  LIMIT 1),"
+            "  (SELECT errin   FROM throughput t2 WHERE t2.interface=t1.interface ORDER BY ts DESC LIMIT 1),"
+            "  (SELECT errout  FROM throughput t2 WHERE t2.interface=t1.interface ORDER BY ts ASC  LIMIT 1),"
+            "  (SELECT errout  FROM throughput t2 WHERE t2.interface=t1.interface ORDER BY ts DESC LIMIT 1)"
+            " FROM throughput t1 GROUP BY t1.interface"
+        ).fetchall()
+
+        # --- event counts ---
+        ev_row = conn.execute(
+            "SELECT"
+            "  SUM(CASE WHEN kind='disconnect' THEN 1 ELSE 0 END),"
+            "  SUM(CASE WHEN kind='reconnect'  THEN 1 ELSE 0 END)"
+            " FROM events"
+        ).fetchone()
+
+        # --- overall time span ---
+        first_ts = conn.execute("SELECT MIN(ts) FROM pings").fetchone()[0]
+        last_ts = conn.execute("SELECT MAX(ts) FROM pings").fetchone()[0]
+
+    if not ping_rows:
+        return {"empty": True}
+
+    ping = {}
+    for r in ping_rows:
+        host, total, lost, loss_pct, mn, mx, av, valid = r
+        ping[host] = {
+            "total": total,
+            "lost": lost,
+            "loss_pct": loss_pct,
+            "min": mn,
+            "max": mx,
+            "avg": av,
+        }
+
+    dns_summary = {}
+    for r in dns_rows:
+        domain, total, failed, av, mn, mx = r
+        dns_summary[domain] = {
+            "total": total,
+            "failed": failed,
+            "avg": av,
+            "min": mn,
+            "max": mx,
+        }
+
+    throughput = {}
+    for bounds in tp_bounds:
+        if bounds and bounds[1] and bounds[2]:
+            nic = bounds[0]
+            ts_first = datetime.fromisoformat(bounds[1])
+            ts_last = datetime.fromisoformat(bounds[2])
+            dur = (ts_last - ts_first).total_seconds()
+            if dur > 0:
+                recv_first, recv_last = bounds[3], bounds[4]
+                sent_first, sent_last = bounds[5], bounds[6]
+                throughput[nic] = {
+                    "duration_s": round(dur, 1),
+                    "avg_down_kbps": round(
+                        max(0, (recv_last - recv_first) * 8 / 1000 / dur), 1
+                    ),
+                    "avg_up_kbps": round(
+                        max(0, (sent_last - sent_first) * 8 / 1000 / dur), 1
+                    ),
+                    "total_dropin": max(0, (bounds[8] or 0) - (bounds[7] or 0)),
+                    "total_dropout": max(0, (bounds[10] or 0) - (bounds[9] or 0)),
+                    "total_errin": max(0, (bounds[12] or 0) - (bounds[11] or 0)),
+                    "total_errout": max(0, (bounds[14] or 0) - (bounds[13] or 0)),
+                }
+
+    events = {
+        "disconnections": (ev_row[0] or 0) if ev_row else 0,
+        "reconnections": (ev_row[1] or 0) if ev_row else 0,
+    }
+
+    return {
+        "empty": False,
+        "updated": datetime.now(timezone.utc).isoformat(),
+        "first_ts": first_ts,
+        "last_ts": last_ts,
+        "hosts": sorted(ping.keys()),
+        "domains": sorted(dns_summary.keys()),
+        "interfaces": sorted(list(throughput.keys())),
+        "ping": ping,
+        "dns": dns_summary,
+        "throughput": throughput,
+        "events": events,
+    }
+
+
+@app.get("/api/summary")
+def api_summary():
+    """Lightweight all-time global statistics — no chart series."""
+    data = build_global_summary(_state["conn"])
+    return JSONResponse(content=data)
+
+
 @app.get("/api/data")
-def api_data():
-    data = build_api_data(_state["conn"])
+def api_data(
+    minutes: float | None = Query(
+        default=None, description="Only return the last N minutes of data"
+    ),
+):
+    data = build_api_data(_state["conn"], minutes=minutes)
     return JSONResponse(content=data)
 
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
-    await manager.connect(websocket)
+    # Parse initial minutes from query string: /ws?minutes=15
+    raw = websocket.query_params.get("minutes")
+    initial_minutes: float | None = DEFAULT_WS_MINUTES
+    if raw is not None:
+        try:
+            val = float(raw)
+            initial_minutes = val if val > 0 else None  # 0 or negative = all
+        except ValueError:
+            pass
+
+    await manager.connect(websocket, minutes=initial_minutes)
     try:
-        # Send full dataset immediately on connect
-        data = build_api_data(_state["conn"])
+        # Send initial dataset with client's requested range
+        data = build_api_data(_state["conn"], minutes=initial_minutes)
         await websocket.send_json(data)
-        # Keep connection alive; client doesn't send messages
+        # Listen for range-change messages from client
         while True:
-            await websocket.receive_text()
+            text = await websocket.receive_text()
+            try:
+                msg = json.loads(text)
+                if "minutes" in msg:
+                    val = msg["minutes"]
+                    mins = float(val) if val and float(val) > 0 else None
+                    await manager.set_minutes(websocket, mins)
+                    # Immediately send data for the new range
+                    data = build_api_data(_state["conn"], minutes=mins)
+                    await websocket.send_json(data)
+            except (ValueError, TypeError, json.JSONDecodeError):
+                pass
     except WebSocketDisconnect:
         await manager.disconnect(websocket)
     except Exception:
@@ -803,13 +1160,14 @@ def serve_frontend(path: str):
     # No frontend build — serve embedded Chart.js dashboard
     return HTMLResponse(content=DASHBOARD_HTML)
 
+
 # ---------------------------------------------------------------------------
 # Collector
 # ---------------------------------------------------------------------------
 
+
 class Collector:
-    def __init__(self, conn, targets, dns_domains, interval,
-                 ws_manager=None):
+    def __init__(self, conn, targets, dns_domains, interval, ws_manager=None):
         self.conn = conn
         self.targets = targets
         self.dns_domains = dns_domains
@@ -820,8 +1178,7 @@ class Collector:
         self._loop = None  # set by lifespan startup
 
     def run(self):
-        db_insert_event(self.conn, "start",
-                        f"targets={list(self.targets.keys())}")
+        db_insert_event(self.conn, "start", f"targets={list(self.targets.keys())}")
         round_num = 0
         while not self.stop_event.is_set():
             start = time.monotonic()
@@ -864,13 +1221,13 @@ class Collector:
                     db_insert_dns(self.conn, d)
 
             # --- Throughput snapshot ---
-            tp = get_throughput_snapshot()
-            db_insert_throughput(self.conn, tp)
+            tp_list = get_throughput_snapshots()
+            for tp in tp_list:
+                db_insert_throughput(self.conn, tp)
 
             # --- Console status ---
             ok = sum(1 for r in results if not r["lost"])
-            lat = [r["latency_ms"] for r in results
-                   if r["latency_ms"] is not None]
+            lat = [r["latency_ms"] for r in results if r["latency_ms"] is not None]
             avg = f"{statistics.mean(lat):.1f}" if lat else "—"
             _print(
                 f"[{datetime.now().strftime('%H:%M:%S')}] "
@@ -880,9 +1237,8 @@ class Collector:
             # --- Broadcast to WebSocket clients ---
             if self._ws_manager and self._loop:
                 try:
-                    data = build_api_data(self.conn)
                     asyncio.run_coroutine_threadsafe(
-                        self._ws_manager.broadcast(data), self._loop
+                        self._ws_manager.broadcast(self.conn), self._loop
                     )
                 except Exception:
                     pass
@@ -899,28 +1255,51 @@ class Collector:
 def _print(msg):
     print(msg, flush=True)
 
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
+
 def main():
     parser = argparse.ArgumentParser(
-        description="Network profiler with live HTML dashboard.")
-    parser.add_argument("--interval", type=float, default=DEFAULT_INTERVAL,
-                        help="Seconds between ping rounds (default: 2)")
-    parser.add_argument("--port", type=int, default=DEFAULT_PORT,
-                        help=f"HTTP server port (default: {DEFAULT_PORT})")
-    parser.add_argument("--output", default=DEFAULT_HTML,
-                        help="Path to static HTML snapshot on shutdown")
-    parser.add_argument("--db", default=DEFAULT_DB,
-                        help="Path to SQLite database file")
-    parser.add_argument("--targets", nargs="+",
-                        help="Hosts/IPs to ping (default: gateway + DNS + internet)")
-    parser.add_argument("--dns-domains", nargs="+", default=DEFAULT_DNS_DOMAINS,
-                        help="Domains for DNS resolution tests")
-    parser.add_argument("--duration", type=str, default=None,
-                        help="How long to run (e.g. 30s, 10m, 2h). "
-                             "Default: run until Ctrl-C")
+        description="Network profiler with live HTML dashboard."
+    )
+    parser.add_argument(
+        "--interval",
+        type=float,
+        default=DEFAULT_INTERVAL,
+        help="Seconds between ping rounds (default: 2)",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=DEFAULT_PORT,
+        help=f"HTTP server port (default: {DEFAULT_PORT})",
+    )
+    parser.add_argument(
+        "--output",
+        default=DEFAULT_HTML,
+        help="Path to static HTML snapshot on shutdown",
+    )
+    parser.add_argument("--db", default=DEFAULT_DB, help="Path to SQLite database file")
+    parser.add_argument(
+        "--targets",
+        nargs="+",
+        help="Hosts/IPs to ping (default: gateway + DNS + internet)",
+    )
+    parser.add_argument(
+        "--dns-domains",
+        nargs="+",
+        default=DEFAULT_DNS_DOMAINS,
+        help="Domains for DNS resolution tests",
+    )
+    parser.add_argument(
+        "--duration",
+        type=str,
+        default=None,
+        help="How long to run (e.g. 30s, 10m, 2h). Default: run until Ctrl-C",
+    )
     args = parser.parse_args()
 
     duration_sec = None
@@ -945,7 +1324,7 @@ def main():
     _print("=" * 60)
     _print("  Network Profiler")
     _print("=" * 60)
-    _print(f"  Targets:    {', '.join(f'{k}={v}' for k,v in targets.items())}")
+    _print(f"  Targets:    {', '.join(f'{k}={v}' for k, v in targets.items())}")
     _print(f"  Interval:   {args.interval}s")
     _print(f"  Dashboard:  http://localhost:{args.port}")
     _print(f"  Snapshot:   {os.path.abspath(args.output)}")
@@ -960,8 +1339,9 @@ def main():
 
     conn = init_db(args.db)
 
-    collector = Collector(conn, targets, args.dns_domains, args.interval,
-                          ws_manager=manager)
+    collector = Collector(
+        conn, targets, args.dns_domains, args.interval, ws_manager=manager
+    )
 
     _state["conn"] = conn
     _state["collector"] = collector

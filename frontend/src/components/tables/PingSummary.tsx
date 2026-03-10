@@ -2,10 +2,10 @@ import type { ProfilerData } from '../../types'
 
 interface Props {
   data: ProfilerData
+  hosts: string[]
 }
 
-export function PingSummary({ data }: Props) {
-  const hosts = data.hosts || []
+export function PingSummary({ data, hosts }: Props) {
   const ping = data.summary?.ping || {}
 
   return (

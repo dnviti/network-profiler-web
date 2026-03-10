@@ -2,10 +2,10 @@ import type { ProfilerData } from '../../types'
 
 interface Props {
   data: ProfilerData
+  domains: string[]
 }
 
-export function DnsSummary({ data }: Props) {
-  const domains = data.domains || []
+export function DnsSummary({ data, domains }: Props) {
   const dns = data.summary?.dns || {}
 
   return (

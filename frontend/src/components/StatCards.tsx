@@ -2,17 +2,12 @@ import type { Summary, ThroughputSummary } from '../types'
 
 interface Props {
   summary: Summary
+  selectedInterface: string | null
 }
 
-function hasThroughput(
-  tp: ThroughputSummary | Record<string, never>,
-): tp is ThroughputSummary {
-  return 'duration_s' in tp
-}
-
-export function StatCards({ summary }: Props) {
+export function StatCards({ summary, selectedInterface }: Props) {
   const ev = summary.events
-  const tp = hasThroughput(summary.throughput) ? summary.throughput : null
+  const tp = selectedInterface && summary.throughput[selectedInterface] ? summary.throughput[selectedInterface] : null
 
   const cards = [
     {

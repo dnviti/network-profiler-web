@@ -1,4 +1,5 @@
 import type { DataPoint } from './types'
+import type uPlot from 'uplot'
 
 export function formatTime(isoString: string): string {
   const d = new Date(isoString)
@@ -10,51 +11,80 @@ export function formatTime(isoString: string): string {
 }
 
 /**
- * Convert backend's column-oriented data to Recharts' row-oriented format.
- * Backend: { host1: [{x, y}, ...], host2: [{x, y}, ...] }
- * Recharts: [{ time: "...", host1: 1.2, host2: 3.4 }, ...]
+ * Convert backend { host: [{x,y},...] } to uPlot AlignedData.
+ * Returns [timestamps, series1, series2, ...] with aligned indices.
+ * Timestamps are Unix seconds (what uPlot expects for time scales).
  */
-export function mergeByTimestamp(
+export function toAlignedData(
   seriesMap: Record<string, DataPoint[]>,
   keys: string[],
-): Record<string, unknown>[] {
-  const timeMap = new Map<string, Record<string, unknown>>()
-
+): uPlot.AlignedData {
+  // Collect all unique timestamps and sort
+  const tsSet = new Set<string>()
   for (const key of keys) {
-    const points = seriesMap[key] || []
-    for (const p of points) {
-      if (!timeMap.has(p.x)) {
-        timeMap.set(p.x, { time: p.x })
-      }
-      timeMap.get(p.x)![key] = p.y
+    const pts = seriesMap[key]
+    if (pts) {
+      for (const p of pts) tsSet.add(p.x)
     }
   }
 
-  return Array.from(timeMap.values()).sort(
-    (a, b) =>
-      new Date(a.time as string).getTime() -
-      new Date(b.time as string).getTime(),
-  )
+  const sorted = Array.from(tsSet).sort()
+  const timestamps = new Float64Array(sorted.length)
+  const tsIndex = new Map<string, number>()
+
+  for (let i = 0; i < sorted.length; i++) {
+    timestamps[i] = new Date(sorted[i]).getTime() / 1000
+    tsIndex.set(sorted[i], i)
+  }
+
+  const series: (number | null)[][] = []
+  for (const key of keys) {
+    const arr: (number | null)[] = new Array(sorted.length).fill(null)
+    const pts = seriesMap[key]
+    if (pts) {
+      for (const p of pts) {
+        const idx = tsIndex.get(p.x)
+        if (idx !== undefined) arr[idx] = p.y
+      }
+    }
+    series.push(arr)
+  }
+
+  return [timestamps, ...series] as uPlot.AlignedData
 }
 
-export function mergeThroughput(
+/**
+ * Convert throughput down/up arrays to uPlot AlignedData.
+ * Returns [timestamps, download, upload].
+ */
+export function toThroughputData(
   down: DataPoint[],
   up: DataPoint[],
-): Record<string, unknown>[] {
-  const timeMap = new Map<string, Record<string, unknown>>()
+): uPlot.AlignedData {
+  const tsSet = new Set<string>()
+  for (const p of down) tsSet.add(p.x)
+  for (const p of up) tsSet.add(p.x)
+
+  const sorted = Array.from(tsSet).sort()
+  const timestamps = new Float64Array(sorted.length)
+  const tsIndex = new Map<string, number>()
+
+  for (let i = 0; i < sorted.length; i++) {
+    timestamps[i] = new Date(sorted[i]).getTime() / 1000
+    tsIndex.set(sorted[i], i)
+  }
+
+  const dlArr: (number | null)[] = new Array(sorted.length).fill(null)
+  const ulArr: (number | null)[] = new Array(sorted.length).fill(null)
 
   for (const p of down) {
-    if (!timeMap.has(p.x)) timeMap.set(p.x, { time: p.x })
-    timeMap.get(p.x)!.download = p.y
+    const idx = tsIndex.get(p.x)
+    if (idx !== undefined) dlArr[idx] = p.y
   }
   for (const p of up) {
-    if (!timeMap.has(p.x)) timeMap.set(p.x, { time: p.x })
-    timeMap.get(p.x)!.upload = p.y
+    const idx = tsIndex.get(p.x)
+    if (idx !== undefined) ulArr[idx] = p.y
   }
 
-  return Array.from(timeMap.values()).sort(
-    (a, b) =>
-      new Date(a.time as string).getTime() -
-      new Date(b.time as string).getTime(),
-  )
+  return [timestamps, dlArr, ulArr] as uPlot.AlignedData
 }
