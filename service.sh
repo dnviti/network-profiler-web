@@ -21,6 +21,28 @@ DEFAULT_INTERVAL=2
 die()  { echo "ERROR: $*" >&2; exit 1; }
 info() { echo ":: $*"; }
 
+open_firewall_port() {
+    local port="$1"
+    if command -v firewall-cmd &>/dev/null && systemctl is-active --quiet firewalld 2>/dev/null; then
+        info "Opening port ${port}/tcp in firewalld …"
+        firewall-cmd --permanent --add-port="${port}/tcp" >/dev/null
+        firewall-cmd --reload >/dev/null
+    else
+        info "Note: firewalld not active — manually open port ${port}/tcp if needed."
+    fi
+}
+
+close_firewall_port() {
+    local port="$1"
+    if command -v firewall-cmd &>/dev/null && systemctl is-active --quiet firewalld 2>/dev/null; then
+        if firewall-cmd --query-port="${port}/tcp" --permanent &>/dev/null; then
+            info "Closing port ${port}/tcp in firewalld …"
+            firewall-cmd --permanent --remove-port="${port}/tcp" >/dev/null
+            firewall-cmd --reload >/dev/null
+        fi
+    fi
+}
+
 need_root() {
     [[ $EUID -eq 0 ]] || die "This command must be run as root (use sudo)."
 }
@@ -172,7 +194,18 @@ INSTALLEOF
         restorecon -R "${INSTALL_DIR}" "${DATA_DIR}" "${UNIT_FILE}" "${ENV_FILE}"
     fi
 
-    # 9. Enable and start
+    # 9. Open firewall port for external access
+    # Close previous port if re-installing with a different port
+    if [[ -f "${ENV_FILE}" ]]; then
+        local old_port
+        old_port=$(grep '^PORT=' "${ENV_FILE}" | cut -d= -f2)
+        if [[ -n "${old_port}" && "${old_port}" != "${port}" ]]; then
+            close_firewall_port "${old_port}"
+        fi
+    fi
+    open_firewall_port "${port}"
+
+    # 10. Enable and start
     info "Enabling and starting ${SERVICE_NAME} …"
     systemctl daemon-reload
     systemctl enable "${SERVICE_NAME}"
@@ -183,7 +216,16 @@ INSTALLEOF
     if systemctl is-active --quiet "${SERVICE_NAME}"; then
         info "Service ${SERVICE_NAME} is running."
         echo ""
-        echo "  Dashboard:  http://0.0.0.0:${port}"
+        local ips
+        ips=$(hostname -I 2>/dev/null | tr ' ' '\n' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | head -5)
+        if [[ -n "${ips}" ]]; then
+            echo "  Dashboard:"
+            while IFS= read -r ip; do
+                echo "    http://${ip}:${port}"
+            done <<< "${ips}"
+        else
+            echo "  Dashboard:  http://localhost:${port}"
+        fi
         echo "  Config:     ${ENV_FILE}"
         echo "  Data dir:   ${DATA_DIR}"
         echo "  Logs:       journalctl -u ${SERVICE_NAME} -f"
@@ -225,7 +267,14 @@ cmd_uninstall() {
         systemctl disable "${SERVICE_NAME}"
     fi
 
-    # 2. Remove unit file
+    # 2. Close firewall port
+    if [[ -f "${ENV_FILE}" ]]; then
+        local fw_port
+        fw_port=$(grep '^PORT=' "${ENV_FILE}" | cut -d= -f2)
+        [[ -n "${fw_port}" ]] && close_firewall_port "${fw_port}"
+    fi
+
+    # 3. Remove unit file
     if [[ -f "${UNIT_FILE}" ]]; then
         info "Removing unit file …"
         rm -f "${UNIT_FILE}"
@@ -359,6 +408,10 @@ Install options:
 Uninstall options:
   --purge               Also remove data in ${DATA_DIR}
   --remove-user         Remove the ${DEFAULT_USER} system user
+
+Firewall:
+  On systems with firewalld, install automatically opens the configured port
+  and uninstall closes it. For other firewalls, open the port manually.
 EOF
 }
 

@@ -1276,6 +1276,16 @@ def _print(msg):
 # ---------------------------------------------------------------------------
 
 
+def _get_local_ips():
+    """Return list of non-loopback IPv4 addresses for this machine."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("8.8.8.8", 80))
+            return [s.getsockname()[0]]
+    except OSError:
+        return ["127.0.0.1"]
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Network profiler with live HTML dashboard."
@@ -1341,7 +1351,9 @@ def main():
     _print("=" * 60)
     _print(f"  Targets:    {', '.join(f'{k}={v}' for k, v in targets.items())}")
     _print(f"  Interval:   {args.interval}s")
-    _print(f"  Dashboard:  http://0.0.0.0:{args.port}")
+    for _ip in _get_local_ips():
+        _print(f"  Dashboard:  http://{_ip}:{args.port}")
+    _print(f"  Listening:  0.0.0.0:{args.port} (all interfaces)")
     _print(f"  Snapshot:   {os.path.abspath(args.output)}")
     _print(f"  Database:   {os.path.abspath(args.db)}")
     _print(f"  DNS tests:  {', '.join(args.dns_domains)}")

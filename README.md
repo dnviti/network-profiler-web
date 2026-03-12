@@ -61,7 +61,7 @@ python3 network_profiler.py --output my_custom_report.html
 python3 network_profiler.py --port 8050
 ```
 
-Once running, open your browser and navigate to the dashboard (by default, `http://0.0.0.0:8065`).
+Once running, open your browser and navigate to the dashboard. The startup banner shows the actual URL(s). By default the server listens on port **8065** on all network interfaces, so you can access it from any machine on the same network at `http://<machine-ip>:8065`.
 
 ## Systemd Service Management
 
@@ -85,3 +85,25 @@ sudo ./service.sh uninstall --purge
 ```
 
 When installed via `service.sh`, the application data (database and HTML report) is stored in `/var/lib/network-profiler` and the configuration is saved to `/etc/sysconfig/network-profiler`.
+
+### Network Access
+
+The web dashboard is accessible from any machine on the local network.
+When installed as a systemd service, `service.sh` automatically configures the firewall:
+
+- **Install:** Opens the configured port in `firewalld` (if active).
+- **Uninstall:** Closes the port in `firewalld`.
+
+If your system does not use `firewalld`, open the port manually:
+
+```bash
+sudo iptables -A INPUT -p tcp --dport 8065 -j ACCEPT
+```
+
+To find your machine's IP address:
+
+```bash
+hostname -I
+```
+
+Then access the dashboard from another machine at `http://<your-ip>:8065`.
