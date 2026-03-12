@@ -61,7 +61,7 @@ python3 network_profiler.py --output my_custom_report.html
 python3 network_profiler.py --port 8050
 ```
 
-Once running, open your browser and navigate to the dashboard (by default, `http://localhost:8065`).
+Once running, open your browser and navigate to the dashboard (by default, `http://0.0.0.0:8065`).
 
 ## Systemd Service Management
 

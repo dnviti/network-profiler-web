@@ -183,7 +183,7 @@ INSTALLEOF
     if systemctl is-active --quiet "${SERVICE_NAME}"; then
         info "Service ${SERVICE_NAME} is running."
         echo ""
-        echo "  Dashboard:  http://localhost:${port}"
+        echo "  Dashboard:  http://0.0.0.0:${port}"
         echo "  Config:     ${ENV_FILE}"
         echo "  Data dir:   ${DATA_DIR}"
         echo "  Logs:       journalctl -u ${SERVICE_NAME} -f"

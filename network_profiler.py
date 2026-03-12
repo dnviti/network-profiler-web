@@ -1353,7 +1353,7 @@ def main():
     _print("=" * 60)
     _print(f"  Targets:    {', '.join(f'{k}={v}' for k, v in targets.items())}")
     _print(f"  Interval:   {args.interval}s")
-    _print(f"  Dashboard:  http://localhost:{args.port}")
+    _print(f"  Dashboard:  http://0.0.0.0:{args.port}")
     _print(f"  Snapshot:   {os.path.abspath(args.output)}")
     _print(f"  Database:   {os.path.abspath(args.db)}")
     _print(f"  DNS tests:  {', '.join(args.dns_domains)}")
