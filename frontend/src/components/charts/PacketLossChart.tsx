@@ -10,14 +10,18 @@ const MAX_POINTS = 2000
 interface Props {
   data: ProfilerData
   hosts: string[]
+  showEvents?: boolean
 }
 
-export function PacketLossChart({ data, hosts }: Props) {
+export function PacketLossChart({ data, hosts, showEvents = true }: Props) {
   const allHosts = data.hosts || []
   const events = data.events_raw || []
 
   const eventsRef = useRef(events)
   eventsRef.current = events
+
+  const showEventsRef = useRef(showEvents)
+  showEventsRef.current = showEvents
 
   const chartData = useMemo(
     () => downsampleAligned(toAlignedData(data.loss || {}, hosts), MAX_POINTS),
@@ -59,6 +63,7 @@ export function PacketLossChart({ data, hosts }: Props) {
     hooks: {
       draw: [
         (u: uPlot) => {
+          if (!showEventsRef.current) return
           const ctx = u.ctx
           const { left, top, width, height: h } = u.bbox
           const ev = eventsRef.current

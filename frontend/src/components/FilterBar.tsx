@@ -59,6 +59,10 @@ interface Props {
   panels: Set<PanelId>
   onTogglePanel: (id: PanelId) => void
 
+  /** Whether DC/RC event markers are shown on charts */
+  showEvents: boolean
+  onToggleEvents: () => void
+
   /** Which hosts are visible (ping-related charts + table) */
   hosts: string[]
   visibleHosts: Set<string>
@@ -78,6 +82,8 @@ interface Props {
 export function FilterBar({
   panels,
   onTogglePanel,
+  showEvents,
+  onToggleEvents,
   hosts,
   visibleHosts,
   onToggleHost,
@@ -102,6 +108,18 @@ export function FilterBar({
               onToggle={() => onTogglePanel(p.id)}
             />
           ))}
+        </div>
+      </div>
+
+      {/* --- Display --- */}
+      <div className="filter-group">
+        <span className="filter-group-label">Display</span>
+        <div className="filter-chips">
+          <Chip
+            label="DC/RC Markers"
+            active={showEvents}
+            onToggle={onToggleEvents}
+          />
         </div>
       </div>
 

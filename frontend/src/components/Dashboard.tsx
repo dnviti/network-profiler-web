@@ -1,22 +1,27 @@
-import { useState, useCallback, useRef, useEffect } from 'react'
+import { useState, useCallback, useRef, useEffect, lazy, Suspense } from 'react'
+import { generateCsv, downloadCsv } from '../csvExport'
 import { useWebSocket } from '../hooks/useWebSocket'
 import { StatCards } from './StatCards'
 import { TimeRangeSelector } from './TimeRangeSelector'
 import { GlobalStats } from './GlobalStats'
 import { FilterBar, ALL_PANELS } from './FilterBar'
 import type { PanelId } from './FilterBar'
-import { LatencyChart } from './charts/LatencyChart'
-import { PacketLossChart } from './charts/PacketLossChart'
-import { JitterChart } from './charts/JitterChart'
-import { DnsChart } from './charts/DnsChart'
-import { ThroughputChart } from './charts/ThroughputChart'
-import { PingSummary } from './tables/PingSummary'
-import { DnsSummary } from './tables/DnsSummary'
+
+const LatencyChart = lazy(() => import('./charts/LatencyChart').then((m) => ({ default: m.LatencyChart })))
+const PacketLossChart = lazy(() => import('./charts/PacketLossChart').then((m) => ({ default: m.PacketLossChart })))
+const JitterChart = lazy(() => import('./charts/JitterChart').then((m) => ({ default: m.JitterChart })))
+const DnsChart = lazy(() => import('./charts/DnsChart').then((m) => ({ default: m.DnsChart })))
+const ThroughputChart = lazy(() => import('./charts/ThroughputChart').then((m) => ({ default: m.ThroughputChart })))
+const PingSummary = lazy(() => import('./tables/PingSummary').then((m) => ({ default: m.PingSummary })))
+const DnsSummary = lazy(() => import('./tables/DnsSummary').then((m) => ({ default: m.DnsSummary })))
 
 const DEFAULT_PANELS = new Set<PanelId>(ALL_PANELS.map((p) => p.id))
 
 export function Dashboard() {
   const { data, connected, minutes, setMinutes } = useWebSocket()
+
+  /* --- event markers visibility --- */
+  const [showEvents, setShowEvents] = useState(true)
 
   /* --- panel visibility --- */
   const [panels, setPanels] = useState<Set<PanelId>>(DEFAULT_PANELS)
@@ -85,6 +90,22 @@ export function Dashboard() {
     }
   }, [allInterfaces])
 
+  /* --- CSV download --- */
+  const handleDownloadCsv = useCallback(() => {
+    if (!data) return
+    const csv = generateCsv({
+      data,
+      hosts: allHosts.filter((h) => visibleHosts?.has(h) ?? true),
+      domains: allDomains.filter((d) => visibleDomains?.has(d) ?? true),
+      selectedInterface,
+      panels,
+      showEvents,
+    })
+    const rangeLabel = minutes != null ? `${minutes}m` : 'all'
+    const ts = new Date().toISOString().replace(/[:.]/g, '-')
+    downloadCsv(csv, `network-profiler-${rangeLabel}-${ts}.csv`)
+  }, [data, allHosts, visibleHosts, allDomains, visibleDomains, selectedInterface, panels, showEvents, minutes])
+
   /* --- loading state --- */
   if (!data) {
     return (
@@ -115,6 +136,7 @@ export function Dashboard() {
           </p>
         </div>
         <div className="header-controls">
+          <button className="csv-download-btn" onClick={handleDownloadCsv}>Download CSV</button>
           <GlobalStats />
           <TimeRangeSelector value={minutes} onChange={setMinutes} />
         </div>
@@ -123,6 +145,8 @@ export function Dashboard() {
       <FilterBar
         panels={panels}
         onTogglePanel={togglePanel}
+        showEvents={showEvents}
+        onToggleEvents={() => setShowEvents((v) => !v)}
         hosts={allHosts}
         visibleHosts={visibleHosts ?? new Set(allHosts)}
         onToggleHost={toggleHost}
@@ -136,51 +160,53 @@ export function Dashboard() {
 
       <StatCards summary={data.summary!} selectedInterface={selectedInterface} />
 
-      <div className="grid">
-        {show('latency') && (
-          <div className="card">
-            <h2>Ping Latency (ms)</h2>
-            <LatencyChart data={data} hosts={filteredHosts} />
-          </div>
-        )}
-        {show('packetLoss') && (
-          <div className="card">
-            <h2>Packet Loss % (rolling 20)</h2>
-            <PacketLossChart data={data} hosts={filteredHosts} />
-          </div>
-        )}
-        {show('jitter') && (
-          <div className="card">
-            <h2>Jitter / Latency StdDev (ms, rolling 10)</h2>
-            <JitterChart data={data} hosts={filteredHosts} />
-          </div>
-        )}
-        {show('dns') && (
-          <div className="card">
-            <h2>DNS Resolution (ms)</h2>
-            <DnsChart data={data} domains={filteredDomains} />
-          </div>
-        )}
-        {show('throughput') && selectedInterface && (
-          <div className="card full">
-            <h2>Throughput (kbps)</h2>
-            <ThroughputChart data={data} selectedInterface={selectedInterface} />
-          </div>
-        )}
-      </div>
+      <Suspense fallback={<div style={{ minHeight: 260 }} />}>
+        <div className="grid">
+          {show('latency') && (
+            <div className="card">
+              <h2>Ping Latency (ms)</h2>
+              <LatencyChart data={data} hosts={filteredHosts} showEvents={showEvents} />
+            </div>
+          )}
+          {show('packetLoss') && (
+            <div className="card">
+              <h2>Packet Loss % (rolling 20)</h2>
+              <PacketLossChart data={data} hosts={filteredHosts} showEvents={showEvents} />
+            </div>
+          )}
+          {show('jitter') && (
+            <div className="card">
+              <h2>Jitter / Latency StdDev (ms, rolling 10)</h2>
+              <JitterChart data={data} hosts={filteredHosts} showEvents={showEvents} />
+            </div>
+          )}
+          {show('dns') && (
+            <div className="card">
+              <h2>DNS Resolution (ms)</h2>
+              <DnsChart data={data} domains={filteredDomains} />
+            </div>
+          )}
+          {show('throughput') && selectedInterface && (
+            <div className="card full">
+              <h2>Throughput (kbps)</h2>
+              <ThroughputChart data={data} selectedInterface={selectedInterface} />
+            </div>
+          )}
+        </div>
 
-      {show('pingSummary') && (
-        <div className="card" style={{ marginBottom: 20 }}>
-          <h2>Ping Summary</h2>
-          <PingSummary data={data} hosts={filteredHosts} />
-        </div>
-      )}
-      {show('dnsSummary') && (
-        <div className="card">
-          <h2>DNS Summary</h2>
-          <DnsSummary data={data} domains={filteredDomains} />
-        </div>
-      )}
+        {show('pingSummary') && (
+          <div className="card" style={{ marginBottom: 20 }}>
+            <h2>Ping Summary</h2>
+            <PingSummary data={data} hosts={filteredHosts} />
+          </div>
+        )}
+        {show('dnsSummary') && (
+          <div className="card">
+            <h2>DNS Summary</h2>
+            <DnsSummary data={data} domains={filteredDomains} />
+          </div>
+        )}
+      </Suspense>
     </div>
   )
 }

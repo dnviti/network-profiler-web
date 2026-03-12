@@ -362,6 +362,33 @@ def load_events(conn, since: str | None = None) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 
+MAX_SERIES_POINTS = 2000
+
+
+def _downsample_series(
+    points: list[dict], max_points: int = MAX_SERIES_POINTS
+) -> list[dict]:
+    """Downsample a list of {x, y} dicts using uniform stepping."""
+    n = len(points)
+    if n <= max_points:
+        return points
+    step = n / max_points
+    out: list[dict] = []
+    for i in range(max_points):
+        out.append(points[int(i * step)])
+    # Always include the last point
+    if out[-1] is not points[-1]:
+        out.append(points[-1])
+    return out
+
+
+def _downsample_dict(
+    series: dict[str, list[dict]], max_points: int = MAX_SERIES_POINTS
+) -> dict[str, list[dict]]:
+    """Apply downsampling to every series in a {key: [{x,y}...]} dict."""
+    return {k: _downsample_series(v, max_points) for k, v in series.items()}
+
+
 def build_api_data(conn, minutes: float | None = None) -> dict:
     """Load data from the DB and return a dict ready for JSON.
 
@@ -581,12 +608,12 @@ def build_api_data(conn, minutes: float | None = None) -> dict:
         "domains": domains,
         "interfaces": interfaces,
         "colors": COLORS,
-        "latency": latency,
-        "loss": loss,
-        "jitter": jitter,
-        "dns": dns,
-        "tp_down": tp_down,
-        "tp_up": tp_up,
+        "latency": _downsample_dict(latency),
+        "loss": _downsample_dict(loss),
+        "jitter": _downsample_dict(jitter),
+        "dns": _downsample_dict(dns),
+        "tp_down": _downsample_dict(tp_down),
+        "tp_up": _downsample_dict(tp_up),
         "annotations": annotations,
         "events_raw": [
             {"ts": e["ts"], "kind": e["kind"], "detail": e["detail"]} for e in events

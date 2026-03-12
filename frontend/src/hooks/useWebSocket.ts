@@ -26,7 +26,7 @@ export function useWebSocket() {
     ws.onmessage = (event) => {
       try {
         const parsed = JSON.parse(event.data) as ProfilerData
-        if (!parsed.empty) setData(parsed)
+        if (!parsed.empty) setData((prev) => prev?.updated === parsed.updated ? prev : parsed)
       } catch {
         /* ignore parse errors */
       }

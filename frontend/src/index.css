@@ -54,6 +54,24 @@ h1 {
   flex-wrap: wrap;
 }
 
+/* CSV download button */
+.csv-download-btn {
+  background: #1e293b;
+  border: 1px solid #334155;
+  color: #94a3b8;
+  border-radius: 6px;
+  padding: 5px 12px;
+  font-size: 0.78rem;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+
+.csv-download-btn:hover {
+  background: #334155;
+  color: #e2e8f0;
+}
+
 /* Global Stats button */
 .global-stats-btn {
   background: #1e293b;
