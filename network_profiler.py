@@ -23,7 +23,6 @@ kept on disk, so nothing is lost if the script is interrupted.
 import argparse
 import asyncio
 import json
-import mimetypes
 import os
 import re
 import signal
@@ -43,6 +42,7 @@ import psutil
 import uvicorn
 from fastapi import FastAPI, Query, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse, Response
+from starlette.staticfiles import StaticFiles
 
 # ---------------------------------------------------------------------------
 # Defaults
@@ -1164,28 +1164,16 @@ async def websocket_endpoint(websocket: WebSocket):
         await manager.disconnect(websocket)
 
 
-@app.get("/{path:path}")
-def serve_frontend(path: str):
-    """Serve React frontend if built, otherwise fall back to embedded HTML."""
-    dist_dir = os.path.join(_script_dir, "frontend", "dist")
-
-    if os.path.isdir(dist_dir):
-        file_path = os.path.join(dist_dir, path) if path else None
-
-        # Serve the exact file if it exists
-        if file_path and os.path.isfile(file_path):
-            ct = mimetypes.guess_type(file_path)[0] or "application/octet-stream"
-            with open(file_path, "rb") as f:
-                return Response(content=f.read(), media_type=ct)
-
-        # SPA fallback: serve index.html for any unmatched route
-        index_path = os.path.join(dist_dir, "index.html")
-        if os.path.isfile(index_path):
-            with open(index_path, "rb") as f:
-                return HTMLResponse(content=f.read().decode())
-
+_dist_dir = os.path.join(_script_dir, "frontend", "dist")
+if os.path.isdir(_dist_dir):
+    # Serve React frontend with proper MIME types; html=True enables SPA
+    # fallback (serves index.html for routes that don't match a file).
+    app.mount("/", StaticFiles(directory=_dist_dir, html=True), name="frontend")
+else:
     # No frontend build — serve embedded Chart.js dashboard
-    return HTMLResponse(content=DASHBOARD_HTML)
+    @app.get("/{path:path}")
+    def serve_frontend(path: str):
+        return HTMLResponse(content=DASHBOARD_HTML)
 
 
 # ---------------------------------------------------------------------------
